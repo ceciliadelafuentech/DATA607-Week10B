@@ -1,0 +1,12 @@
+---
+title: "Assignment10B"
+author: "Cecilia De La Fuente Chavez"
+format: html
+editor: visual
+---
+
+## Approach
+
+I’ll use the Nobel Prize API to retrieve laureate data in JSON format. Since the API includes birth information and a nested list of prizes for each laureate, I expect one endpoint to provide the information needed for all four questions. I think I will use `jsonlite` to retrieve and parse the JSON, then use `hoist()` and `unnest_longer()` to transform the nested data into two tables: one with a row per laureate and another with a row per laureate-prize combination.
+
+I anticipate several data challenges, including laureates who have received multiple prizes, organizations such as the Red Cross that do not have birth or gender information, and missing fields in older records. Additionally, there should be differences between birth and award-time countries, which will require extra review and decision on how to handle these cases. I’ll also check for missing values before the analysis.

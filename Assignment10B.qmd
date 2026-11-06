@@ -1,0 +1,156 @@
+---
+title: "Assignment10B"
+author: "Cecilia De La Fuente Chavez"
+format: html
+execute:
+  echo: true
+editor: visual
+---
+
+## Approach Deliverable
+
+### Overview
+
+I’ll use the Nobel Prize API to retrieve laureate data in JSON format. Since the API includes birth information and a nested list of prizes for each laureate, I expect one endpoint to provide the information needed for all four questions. I think I will use `jsonlite` to retrieve and parse the JSON, then use `hoist()` and `unnest_longer()` to transform the nested data into two tables: one with a row per laureate and another with a row per laureate-prize combination.
+
+I anticipate several data challenges, including laureates who have received multiple prizes, organizations such as the Red Cross that do not have birth or gender information, and missing fields in older records. Additionally, there should be differences between birth and award-time countries, which will require extra review and decision on how to handle these cases. I’ll also check for missing values before the analysis.
+
+## Code Base Deliverable
+
+### Load libraries
+
+```{r}
+library(tidyverse)
+library(jsonlite)
+```
+
+### Data and transformations
+
+Get the data from the API
+
+```{r}
+# limit=2000 is bigger than the number of laureates, so we get everyone in one call
+url <- "https://api.nobelprize.org/2.1/laureates?limit=2000&format=json"
+
+# simplifyVector = FALSE keeps the JSON as plain nested lists.
+# $laureates picks out just the list of laureates from the response.
+raw <- fromJSON(url, simplifyVector = FALSE)$laureates
+```
+
+Put the raw list into a tibble, one laureate per row
+
+```{r}
+laureates <- tibble(x = raw) |>
+  # hoist() reaches into nested JSON and pulls out the fields like ("birth", "place", "countryNow", "en")
+  hoist(x,
+        id                = "id",
+        name              = list("knownName", "en"),   # people have knownName
+        org_name          = list("orgName", "en"),     # organizations have orgName
+        gender            = "gender",
+        birth_date        = list("birth", "date"),
+        birth_country_now = list("birth", "place", "countryNow", "en"),  # "now" = modern country name
+        prizes            = "nobelPrizes") |>          # prizes stays nested for now
+  select(-x) |>                                        # drop the leftover raw column
+  # Organizations have no knownName, so fill with their orgName
+  mutate(name = coalesce(name, org_name)) |>
+  select(-org_name)
+```
+
+"prizes" holds a list for each laureate, flatten so there is one row per laureate-prize
+
+```{r}
+# unnest_longer() gives each prize its own row, so a multiple winner gets one per prize.
+prizes <- laureates |>
+  unnest_longer(prizes) |>
+  # Pull the prize details out of the nested prize record
+  hoist(prizes,
+        award_year              = "awardYear",
+        category                = list("category", "en"),
+        portion                 = "portion",
+        # affiliations is a list; the 1 means "take the first affiliation".
+        # We use countryNow so old names become modern ones.
+        affiliation_country_now = list("affiliations", 1, "countryNow", "en")) |>
+  mutate(award_year = as.integer(award_year),             # years come in as text, so convert
+         birth_year = as.integer(substr(birth_date, 1, 4)),  # first 4 characters of the date
+         decade     = award_year %/% 10 * 10) |>          # example 1987 to 1980
+  select(id, name, gender, birth_country_now, birth_year,
+         award_year, decade, category, portion, affiliation_country_now)
+
+# examine final table
+glimpse(prizes)
+```
+
+Which category has the most laureates, and how has that changed by decade?
+
+```{r}
+# Part 1: total laureates per category, biggest first
+prizes |>
+  count(category, sort = TRUE)
+
+# Part 2: count laureates for every decade-and-category combination,
+# then draw stacked bars so we can see each category's share over time
+prizes |>
+  count(decade, category) |>
+  ggplot(aes(decade, n, fill = category)) +   # fill = color each category differently
+  geom_col() +
+  labs(x = "Decade", y = "Laureates", fill = "Category")
+```
+
+How has the share of women laureates changed over time?
+
+```{r}
+prizes |>
+  filter(!is.na(gender)) |>          # drop organizations (no gender recorded)
+  group_by(decade) |>
+  # n = how many laureates that decade.
+  # KEY STEP: gender == "female" is TRUE/FALSE for each row, and mean() of
+  # TRUE/FALSE values is the share of TRUE, i.e. the share of women.
+  summarise(n = n(), share_female = mean(gender == "female")) |>
+  ggplot(aes(decade, share_female)) +
+  geom_line() +
+  geom_point() +
+  scale_y_continuous(labels = scales::percent) +   # show 0.1 as 10%
+  labs(x = "Decade", y = "Share of laureates who are women")
+```
+
+Which country "lost" the most laureates?
+
+```{r}
+# Keep only rows where both countries are known and the birth country is different from the affiliation country.
+lost <- prizes |>
+  filter(!is.na(birth_country_now),
+         !is.na(affiliation_country_now),
+         birth_country_now != affiliation_country_now)
+
+# Which birth countries show up most often?
+lost |>
+  count(birth_country_now, sort = TRUE) |>
+  slice_head(n = 10)     # show only the top 10
+
+# Where did they end up? Count each birth-country to affiliation-country pair
+lost |>
+  count(birth_country_now, affiliation_country_now, sort = TRUE) |>
+  slice_head(n = 10)
+```
+
+How old are laureates when they win, by category?
+
+```{r}
+prizes |>
+  filter(!is.na(birth_year)) |>              # organizations have no birth year
+  mutate(age = award_year - birth_year) |>   # approximate age at the award
+  ggplot(aes(category, age)) +
+  geom_boxplot() +                           # box = middle half of ages, line = median, dots = outliers
+  coord_flip() +                             # flip so the category names are easy to read
+  labs(x = NULL, y = "Approximate age at award")
+```
+
+### Conclusion
+
+To answer these questions, I pulled the laureate data from the Nobel Prize API, flattened the nested JSON into one row per laureate-prize, and checked for missing values along the way. The first graph shows that Physiology or Medicine had the most laureates overall, and that the number of laureates increased around the 1990s and 2000s before dropping slightly in recent years, with Chemistry and Medicine growing in those decades. The second graph shows that women laureates are on an upward trend but still make up only about 20% of winners. The United Kingdom and Germany “lost” the most laureates, each with 24 born there but affiliated with another country when they won, and the most common destination was the USA. The last box plot shows that the approximate age at award is concentrated between 50 and 75, though the median age and outliers vary by category, with the Peace prize having outliers younger than 25. Some limits to keep in mind: the API gives only the award year, so ages are approximate, and Literature and Peace laureates almost never have a recorded affiliation, so the “lost laureates” answer covers mainly science and economics winners.
+
+### AI Assistance
+
+Anthropic. (2026). Claude Sonnet 5.5 \[Generative AI chat\]. <https://claude.ai/>
+
+Claude was used as a supplemental tool to help choose an API endpoint, understand the structure of the JSON response, and develop the R code for tidying the nested data, analysis, and visualization. It also helped add explanatory comments to the code. I reviewed and ran the code, checked the output, and interpreted the results as part of my analysis.
